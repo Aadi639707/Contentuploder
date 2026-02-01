@@ -8,11 +8,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from flask import Flask
 from threading import Thread
 
-# --- RENDER WEB SERVER ---
+# --- RENDER WEB SERVER (To keep Render alive) ---
 app = Flask(__name__)
 @app.route('/')
 def health_check():
-    return "Bot is alive and running!"
+    return "Bot is active!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
@@ -32,10 +32,10 @@ history_col = db["history"]
 
 bot = Client("ContentPilot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- SCRAPER LOGIC (Example: Search Engine Scraping) ---
+# --- SCRAPER LOGIC ---
 async def fetch_movie_links(query):
-    """Simple scraper that searches for links based on category"""
-    search_url = f"https://www.google.com/search?q={query}+direct+download+link+movies"
+    """Searches for movie links based on category"""
+    search_url = f"https://www.google.com/search?q={query}+direct+download+link"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(search_url, headers=headers)
@@ -45,8 +45,9 @@ async def fetch_movie_links(query):
             link = a['href']
             if "url?q=" in link and "webcache" not in link:
                 clean_link = link.split("url?q=")[1].split("&sa=")[0]
-                links.append(clean_link)
-        return links[:5] # Return top 5 links
+                if clean_link.startswith("http"):
+                    links.append(clean_link)
+        return links[:5]
     except Exception as e:
         print(f"Scraping error: {e}")
         return []
@@ -59,66 +60,68 @@ async def auto_post_engine():
             chat_id = channel["chat_id"]
             category = channel["category"]
             
-            # Find Content
             links = await fetch_movie_links(category)
             
             for link in links:
-                # Check if already posted
                 if await history_col.find_one({"link": link, "chat_id": chat_id}):
                     continue
                 
-                # Format Caption (AI Style)
+                # Smart Captioning
                 caption = (
                     f"🎬 **New Content Uploaded!**\n\n"
                     f"📂 **Category:** {category}\n"
-                    f"🔗 **Link:** {link}\n\n"
-                    f"✨ *Automated by Content Pilot AI*"
+                    f"🔗 **Download Link:** {link}\n\n"
+                    f"📢 **Join Our Channel for More!**\n"
+                    f"✨ *Powered by Content Pilot AI*"
                 )
                 
                 try:
                     await bot.send_message(chat_id, caption)
                     await history_col.insert_one({"link": link, "chat_id": chat_id})
-                    break # Post one at a time
+                    break 
                 except Exception as e:
                     print(f"Post error in {chat_id}: {e}")
             
-        await asyncio.sleep(3600) # Wait 1 Hour
+        await asyncio.sleep(3600) # Check every 1 hour
 
 # --- COMMANDS ---
-@bot.on_message(filters.command("start"))
+@bot.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     await message.reply_text(
-        "🚀 **Content Pilot AI v1.0**\n\n"
-        "I am a fully automated content scraper and poster.\n"
-        "1. Add me to your channel as Admin.\n"
-        "2. Use /setup <category> to start auto-posting.\n"
-        "3. Language: Fully English supported."
+        "🚀 **Content Pilot AI v1.5 (Global)**\n\n"
+        "I can automate your channel content from my DM.\n\n"
+        "**How to setup:**\n"
+        "1. Add me to your channel as **Admin**.\n"
+        "2. Get your Channel ID (use @userinfobot).\n"
+        "3. Use `/setup <Channel_ID> <Category>` here in DM.\n\n"
+        "Example: `/setup -1001234567890 Movies Hindi`"
     )
 
-@bot.on_message(filters.command("setup") & filters.group)
-async def setup_channel(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text("Usage: /setup Movies Hindi")
+@bot.on_message(filters.command("setup") & filters.private)
+async def setup_remote(client, message):
+    if len(message.command) < 3:
+        return await message.reply_text("❌ Usage: `/setup -1001234567890 CategoryName`")
     
-    category = " ".join(message.command[1:])
-    chat_id = message.chat.id
-    
-    await channels_col.update_one(
-        {"chat_id": chat_id},
-        {"$set": {"category": category, "active": True}},
-        upsert=True
-    )
-    await message.reply_text(f"✅ Success! I will post **{category}** content every hour.")
+    try:
+        target_chat_id = int(message.command[1])
+        category = " ".join(message.command[2:])
+        
+        await channels_col.update_one(
+            {"chat_id": target_chat_id},
+            {"$set": {"category": category, "active": True, "admin_id": message.from_user.id}},
+            upsert=True
+        )
+        await message.reply_text(f"✅ **Linked!** Bot will post **{category}** in channel `{target_chat_id}`.")
+    except ValueError:
+        await message.reply_text("❌ Invalid ID. It must be a number starting with -100.")
 
-# --- MAIN EXECUTION ---
+# --- STARTUP ---
 if __name__ == "__main__":
-    # Start Flask thread for Render
     Thread(target=run_flask).start()
     
-    # Run Bot
-    bot.run()
-    
-    # Start loop
     loop = asyncio.get_event_loop()
     loop.create_task(auto_post_engine())
-              
+    
+    print("Bot is starting...")
+    bot.run()
+                    
